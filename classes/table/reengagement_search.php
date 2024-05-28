@@ -25,7 +25,10 @@
 
 namespace mod_reengagement\table;
 
+use context;
+use core_table\local\filter\filterset;
 use core_user\table\participants_search;
+use stdClass;
 
 defined('MOODLE_INTERNAL') || die;
 
@@ -40,6 +43,23 @@ require_once($CFG->dirroot . '/user/lib.php');
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class reengagement_search extends participants_search {
+    /**
+     * @var int $reengagementid The reengagement id
+     */
+    private $reengagementid;
+
+    /**
+     * Constructor
+     *
+     * @param stdClass $course The course object
+     * @param context $context The context
+     * @param filterset $filterset The filterset
+     * @param int $reengagementid The reengagement id
+     */
+    public function __construct(stdClass $course, context $context, filterset $filterset, int $reengagementid) {
+        parent::__construct($course, $context, $filterset);
+        $this->reengagementid = $reengagementid;
+    }
 
     /**
      * Generate the SQL used to fetch filtered data for the reengagement table.
@@ -50,7 +70,9 @@ class reengagement_search extends participants_search {
      */
     protected function get_participants_sql(string $additionalwhere, array $additionalparams): array {
         $sql = parent::get_participants_sql($additionalwhere, $additionalparams);
-        $sql['outerjoins'] .= 'LEFT JOIN {reengagement_inprogress} rip ON rip.userid = u.id';
+        $sql['params']['reengagementid'] = $this->reengagementid;
+        $sql['outerjoins'] .= 'LEFT JOIN {reengagement_inprogress} rip ON rip.userid = u.id ' .
+            'AND rip.reengagement = :reengagementid';
         $sql['outerselect'] .= ', rip.completiontime AS completiontime, rip.emailtime AS emailtime, '
             . 'rip.emailsent AS emailsent, rip.completed AS completed';
         return $sql;

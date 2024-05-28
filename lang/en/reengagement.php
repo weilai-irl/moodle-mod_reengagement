@@ -46,6 +46,8 @@ The Reengagement activity is very flexible, explore what you can do with it.
 
 // Alphabetized.
 $string['activitycompleted'] = 'This activity has been marked as complete';
+$string['adhoctaskmarkcompletetask'] = 'Mark reengagement complete';
+$string['adhoctasksendemailtask'] = 'Send reengagement email';
 $string['afterdelay'] = 'After delay';
 $string['areyousure'] = 'Are you sure you want to make this change?';
 $string['completion'] = 'Completion';
@@ -53,6 +55,10 @@ $string['completionwillturnon'] = 'Note that adding this activity to the course 
 $string['completeattimex'] = 'This activity will complete at {$a}';
 $string['completiontime'] = 'Completion time';
 $string['completiondatesupdated'] = 'Completion dates updated.';
+$string['configignorecategoryvisbility'] = 'Ignore category visibility';
+$string['configignorecategoryvisbilitydesc'] = 'If enabled, the scheduled task will ignore category and parent category visibility when checking course visibility. This requires the "Process visible courses only" setting to be enabled.';
+$string['configprocessvisiblecoursesonly'] = 'Process visible courses only';
+$string['configprocessvisiblecoursesonlydesc'] = 'If enabled, the scheduled task will only process courses that are visible to students, and skip hidden courses or courses in hidden categories.';
 $string['crontask'] = 'Reengagement cron task';
 $string['cronwarning'] = 'The Reengagment scheduled task has not been run in the past 8 hours - Cron must be configured to allow Reenagagements to function correctly.';
 $string['days'] = 'Days';
@@ -124,6 +130,8 @@ $string['remindercount_help'] = 'This is the number of times an e-mail is sent a
 <li>less than 5 days - limit of 10 reminders.</li>
 <li>less than 15 days - limit of 26 reminders.</li>
 <li>over 15 days - maximum limit of 40 reminders.</li></ul>';
+$string['removeinprogress'] = 'Remove in progress reengagements';
+$string['removeinprogressresults'] = 'Deleted in progress reengagements';
 $string['resetbyfirstaccess'] = 'By first course access and a duration of: {$a}';
 $string['resetbyenrolment'] = 'By enrolment creation date and a duration of: {$a}';
 $string['resetbyspecificdate'] = 'By specified date';

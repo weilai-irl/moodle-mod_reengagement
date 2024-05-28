@@ -23,6 +23,10 @@
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+use core\task\manager;
+use mod_reengagement\task\mark_complete;
+use mod_reengagement\task\send_email;
+
 defined('MOODLE_INTERNAL') || die();
 require_once($CFG->libdir."/completionlib.php");
 
@@ -84,7 +88,7 @@ function reengagement_update_instance($reengagement) {
     $reengagement->timemodified = time();
     $reengagement->id = $reengagement->instance;
 
-    // If they didn't chose to suppress email, do nothing.
+    // If they didn't choose to suppress email, do nothing.
     if (!$reengagement->suppressemail) {
         $reengagement->suppresstarget = 0;// No target to be set.
     }
@@ -181,8 +185,8 @@ function reengagement_crontask() {
     $reengagementssql = "SELECT cm.id as id, cm.id as cmid, cm.availability, r.id as rid, r.course as courseid,
                                 r.duration, r.emaildelay
                           FROM {reengagement} r
-                    INNER JOIN {course_modules} cm on cm.instance = r.id
-                          JOIN {modules} m on m.id = cm.module
+                    INNER JOIN {course_modules} cm ON cm.instance = r.id
+                    INNER JOIN {modules} m ON m.id = cm.module
                          WHERE m.name = 'reengagement' AND cm.deletioninprogress = 0
                       ORDER BY r.id ASC";
 
@@ -193,8 +197,18 @@ function reengagement_crontask() {
         return true;
     }
 
+    $processvisiblecoursesonly = get_config('mod_reengagement', 'process_visible_courses_only');
+    $ignorecategoryvisibility = get_config('mod_reengagement', 'ignore_category_visibility');
+
     // First: add 'in-progress' records for those users who are able to start.
     foreach ($reengagements as $reengagementcm) {
+        if ($processvisiblecoursesonly) {
+            if (!reengagement_check_course_visibility($reengagementcm->courseid, $ignorecategoryvisibility == 1)) {
+                mtrace("Course $reengagementcm->courseid is not visible - skipping reengagement $reengagementcm->rid");
+                continue;
+            }
+        }
+
         // Get a list of users who are eligible to start this module.
         $startusers = reengagement_get_startusers($reengagementcm);
 
@@ -209,13 +223,20 @@ function reengagement_crontask() {
         $activitycompletion->timemodified = $timenow;
         $userlist = array_keys($startusers);
         $newripcount = count($userlist); // Count of new reengagements-in-progress.
-        if (debugging('', DEBUG_DEVELOPER) || ($newripcount && debugging('', DEBUG_ALL))) {
-            mtrace("Adding $newripcount reengagements-in-progress to reengagementid " . $reengagementcm->rid);
-        }
+
+        mtrace("Adding $newripcount reengagements-in-progress to reengagementid " . $reengagementcm->rid);
 
         foreach ($userlist as $userid) {
             $reengagementinprogress->userid = $userid;
-            $DB->insert_record('reengagement_inprogress', $reengagementinprogress);
+            $reengagementinprogress->id = $DB->insert_record('reengagement_inprogress', $reengagementinprogress);
+            // Queue mark complete ad-hoc task.
+            reengagement_queue_mark_completion_task($reengagementcm, $reengagementinprogress);
+
+            // Queue email sending ad-hoc task.
+            if ($reengagementcm->emailuser == REENGAGEMENT_EMAILUSER_TIME && $reengagementcm->remindercount > 0) {
+                reengagement_queue_email_task($reengagementcm, $reengagementinprogress, $reengagementinprogress->emailtime);
+            }
+
             $activitycompletion->userid = $userid;
             $DB->insert_record('course_modules_completion', $activitycompletion);
         }
@@ -224,172 +245,81 @@ function reengagement_crontask() {
     // All new users have now been recorded as started.
     // See if any previous users are due to finish, &/or be emailed.
 
-    // Get more info about the activity, & prepare to update db
-    // and email users.
-
-    $reengagementssql = "SELECT r.id as id, cm.id as cmid, r.emailcontent, r.emailcontentformat, r.emailsubject,
-                                r.thirdpartyemails, r.emailcontentmanager, r.emailcontentmanagerformat, r.emailsubjectmanager,
-                                r.emailcontentthirdparty, r.emailcontentthirdpartyformat, r.emailsubjectthirdparty,
-                                r.emailuser, r.name, r.suppresstarget, r.remindercount, c.shortname as courseshortname,
-                                c.fullname as coursefullname, c.id as courseid, r.emailrecipient, r.emaildelay
-                          FROM {reengagement} r
-                    INNER JOIN {course_modules} cm ON cm.instance = r.id
-                    INNER JOIN {course} c ON cm.course = c.id
-                          JOIN {modules} m on m.id = cm.module
-                         WHERE m.name = 'reengagement'
-                      ORDER BY r.id ASC";
-
-    $reengagements = $DB->get_records_sql($reengagementssql);
-
-    $inprogresssql = 'SELECT ri.*
-                        FROM {reengagement_inprogress} ri
-                        JOIN {reengagement} r ON r.id = ri.reengagement
-                        JOIN {user} u ON u.id = ri.userid
-                       WHERE u.deleted = 0 AND
-                       completiontime < ? AND completed = 0';
-    $inprogresses = $DB->get_recordset_sql($inprogresssql, array($timenow));
-    $completeripcount = 0;
-    foreach ($inprogresses as $inprogress) {
-        $completeripcount++;
-        // A user has completed an instance of the reengagement module.
-        $inprogress->timedue = $inprogress->completiontime;
-        $reengagement = $reengagements[$inprogress->reengagement];
-        $cmid = $reengagement->cmid; // The cm id of the module which was completed.
-        $userid = $inprogress->userid; // The userid which completed the module.
-
-        // Check if user is still enrolled in the course.
-        $context = context_module::instance($reengagement->cmid);
-        if (!is_enrolled($context, $userid, 'mod/reengagement:startreengagement', true)) {
-            $DB->delete_records('reengagement_inprogress', array('id' => $inprogress->id));
-            continue;
-        }
-
-        // Update completion record to indicate completion so the user can continue with any dependant activities.
-        $completionrecord = $DB->get_record('course_modules_completion', array('coursemoduleid' => $cmid, 'userid' => $userid));
-        if (empty($completionrecord)) {
-            mtrace("Could not find completion record to update complete state, userid: $userid, cmid: $cmid - recreating record.");
-            // This might happen when reset_all_state has been triggered, deleting an "in-progress" record. so recreate it.
-            $completionrecord = new stdClass();
-            $completionrecord->coursemoduleid = $cmid;
-            $completionrecord->completionstate = COMPLETION_COMPLETE_PASS;
-            $completionrecord->viewed = COMPLETION_VIEWED;
-            $completionrecord->overrideby = null;
-            $completionrecord->timemodified = $timenow;
-            $completionrecord->userid = $userid;
-            $completionrecord->id = $DB->insert_record('course_modules_completion', $completionrecord);
-        } else {
-            $updaterecord = new stdClass();
-            $updaterecord->id = $completionrecord->id;
-            $updaterecord->completionstate = COMPLETION_COMPLETE_PASS;
-            $updaterecord->timemodified = $timenow;
-            $DB->update_record('course_modules_completion', $updaterecord) . " \n";
-        }
-        $completioncache = cache::make('core', 'completion');
-        $completioncache->delete($userid . '_' . $reengagement->courseid);
-
-        $cmcontext = context_module::instance($cmid, MUST_EXIST);
-        // Trigger an event for course module completion changed.
-        $event = \core\event\course_module_completion_updated::create(array(
-            'objectid' => $completionrecord->id,
-            'context' => $cmcontext,
-            'relateduserid' => $userid,
-            'other' => array(
-                'relateduserid' => $userid
-            )
-        ));
-        $event->add_record_snapshot('course_modules_completion', $completionrecord);
-        $event->trigger();
-
-        $result = false;
-        if (($reengagement->emailuser == REENGAGEMENT_EMAILUSER_COMPLETION) ||
-                ($reengagement->emailuser == REENGAGEMENT_EMAILUSER_NEVER) ||
-                ($reengagement->emailuser == REENGAGEMENT_EMAILUSER_TIME && !empty($inprogress->emailsent))) {
-            // No need to keep 'inprogress' record for later emailing
-            // Delete inprogress record.
-            debugging('', DEBUG_DEVELOPER) && mtrace("mode $reengagement->emailuser reengagementid $reengagement->id.
-                      User marked complete, deleting inprogress record for user $userid");
-            $result = $DB->delete_records('reengagement_inprogress', array('id' => $inprogress->id));
-        } else {
-            // Update inprogress record to indicate completion done.
-            debugging('', DEBUG_DEVELOPER) && mtrace("mode $reengagement->emailuser reengagementid $reengagement->id
-                      updating inprogress record for user $userid to indicate completion");
-            $updaterecord = new stdClass();
-            $updaterecord->id = $inprogress->id;
-            $updaterecord->completed = COMPLETION_COMPLETE;
-            $result = $DB->update_record('reengagement_inprogress', $updaterecord);
-        }
-        if (empty($result)) {
-            // Skip emailing. Go on to next completion record so we don't risk emailing users continuously each cron.
-            debugging('', DEBUG_ALL) && mtrace("Reengagement: not sending email to $userid regarding reengagementid
-                      $reengagement->id due to failuer to update db");
-            continue;
-        }
-        if ($reengagement->emailuser == REENGAGEMENT_EMAILUSER_COMPLETION) {
-            debugging('', DEBUG_ALL) && mtrace("Reengagement: sending email to $userid regarding reengagementid
-                      $reengagement->id due to completion.");
-            reengagement_email_user($reengagement, $inprogress);
-        }
-    }
-    $inprogresses->close();
-
-    if (debugging('', DEBUG_DEVELOPER) || ($completeripcount && debugging('', DEBUG_ALL))) {
-        mtrace("Found $completeripcount complete reengagements.");
-    }
-
-    // Get inprogress records where the user has reached their email time, and module is email 'after delay'.
-    $inprogresssql = "SELECT ip.*, ip.emailtime as timedue
-                        FROM {reengagement_inprogress} ip
-                  INNER JOIN {reengagement} r on r.id = ip.reengagement
-                        JOIN {user} u ON u.id = ip.userid
-                       WHERE ip.emailtime < :emailtime
-                             AND r.emailuser = " . REENGAGEMENT_EMAILUSER_TIME . '
-                             AND ip.emailsent < r.remindercount
-                             AND u.deleted = 0
-                    ORDER BY r.id ASC';
-    $params = array('emailtime' => $timenow);
-
-    $inprogresses = $DB->get_recordset_sql($inprogresssql, $params);
-    $emailduecount = 0;
-    foreach ($inprogresses as $inprogress) {
-        $emailduecount++;
-        $reengagement = $reengagements[$inprogress->reengagement];
-        $userid = $inprogress->userid; // The userid which completed the module.
-
-        // Check if user is still enrolled in the course.
-        $context = context_module::instance($reengagement->cmid);
-        if (!is_enrolled($context, $userid, 'mod/reengagement:startreengagement', true)) {
-            $DB->delete_records('reengagement_inprogress', array('id' => $inprogress->id));
-            continue;
-        }
-
-        if ($inprogress->completed == COMPLETION_COMPLETE) {
-            debugging('', DEBUG_DEVELOPER) && mtrace("mode $reengagement->emailuser reengagementid $reengagement->id.
-                      User already marked complete. Deleting inprogress record for user $userid");
-            $result = $DB->delete_records('reengagement_inprogress', array('id' => $inprogress->id));
-        } else {
-            debugging('', DEBUG_DEVELOPER) && mtrace("mode $reengagement->emailuser reengagementid $reengagement->id.
-                      Updating inprogress record to indicate email sent for user $userid");
-            $updaterecord = new stdClass();
-            $updaterecord->id = $inprogress->id;
-            if ($reengagement->remindercount > $inprogress->emailsent) {
-                $updaterecord->emailtime = $timenow + $reengagement->emaildelay;
-            }
-            $updaterecord->emailsent = $inprogress->emailsent + 1;
-            $result = $DB->update_record('reengagement_inprogress', $updaterecord);
-        }
-        if (!empty($result)) {
-            debugging('', DEBUG_ALL) && mtrace("Reengagement: sending email to $userid regarding reengagementid
-                      $reengagement->id due to emailduetime.");
-            reengagement_email_user($reengagement, $inprogress);
-        }
-    }
-    $inprogresses->close();
-
-    if (debugging('', DEBUG_DEVELOPER) || ($emailduecount && debugging('', DEBUG_ALL))) {
-        mtrace("Found $emailduecount reengagements due to be emailed.");
-    }
-
     return true;
+}
+
+/**
+ * Check the visibility of a course, considering its category and parent categories.
+ *
+ * @param int $courseid
+ * @param bool $ignorecategoryvisibility
+ * @return bool
+ */
+function reengagement_check_course_visibility(int $courseid, bool $ignorecategoryvisibility) : bool {
+    global $DB;
+
+    // Get the course record.
+    $course = $DB->get_record('course', array('id' => $courseid));
+
+    // If the course itself is not visible, return false.
+    if (!$course || !$course->visible) {
+        return false;
+    }
+
+    // Check the visibility of the course's category and its parent categories.
+    if (!$ignorecategoryvisibility) {
+        $category = $DB->get_record('course_categories', array('id' => $course->category));
+        while ($category) {
+            if (!$category->visible) {
+                return false;
+            }
+            if ($category->parent) {
+                $category = $DB->get_record('course_categories', array('id' => $category->parent));
+            } else {
+                $category = null;
+            }
+        }
+    }
+
+    // If we've made it this far, the course and all its parent categories are visible.
+    return true;
+}
+
+/**
+ * Queue a task to mark a reengagement as complete.
+ *
+ * @param $reengagement
+ * @param $inprogress
+ * @return void
+ */
+function reengagement_queue_mark_completion_task($reengagement, $inprogress) {
+    $task = new mark_complete();
+    $data = [
+        'reengagement' => $reengagement,
+        'inprogress' => $inprogress,
+    ];
+    $task->set_custom_data($data);
+    $task->set_next_run_time($inprogress->completiontime);
+    manager::queue_adhoc_task($task);
+}
+
+/**
+ * Queue an email sending task.
+ *
+ * @param $reengagement
+ * @param $inprogress
+ * @param $time
+ * @return void
+ */
+function reengagement_queue_email_task($reengagement, $inprogress, $time) {
+    $task = new send_email();
+    $data = [
+        'reengagement' => $reengagement,
+        'inprogress' => $inprogress,
+    ];
+    $task->set_custom_data($data);
+    $task->set_next_run_time($time);
+    manager::queue_adhoc_task($task);
 }
 
 /**
@@ -414,8 +344,8 @@ function reengagement_email_user($reengagement, $inprogress) {
     if (!empty($reengagement->suppresstarget)) {
         $targetcomplete = reengagement_check_target_completion($user->id, $reengagement->suppresstarget);
         if ($targetcomplete) {
-            debugging('', DEBUG_DEVELOPER) && mtrace('Reengagement modules: User:'.$user->id.
-                      ' has completed target activity:'.$reengagement->suppresstarget.' suppressing email.');
+            mtrace("Reengagement modules: User: . $user->id has completed target activity: $reengagement->suppresstarget. " .
+                "suppressing email.");
             return true;
         }
     }
@@ -423,21 +353,19 @@ function reengagement_email_user($reengagement, $inprogress) {
     if (!empty($inprogress->timedue) && (($inprogress->timedue + 2 * DAYSECS) < time())) {
         // We should have sent this email more than two days ago.
         // Don't send.
-        debugging('', DEBUG_ALL) && mtrace('Reengagement: ip id ' . $inprogress->id . 'User:'.$user->id.
-                  ' Email not sent - was due more than 2 days ago.');
+        mtrace("Reengagement: ip id $inprogress->id, User: $user->id. Email not sent - was due more than 2 days ago.");
         return true;
     }
     if (!empty($inprogress->timeoverdue) && ($inprogress->timeoverdue < time())) {
         // There's a deadline hint provided, and we're past it.
         // Don't send.
-        debugging('', DEBUG_ALL) && mtrace('Reengagement: ip id ' . $inprogress->id . 'User:'.$user->id.
-                  ' Email not sent - past usefulness deadline.');
+        mtrace("Reengagement: ip id $inprogress->id, User: $user->id. Email not sent - past usefulness deadline.");
         return true;
     }
 
-    debugging('', DEBUG_DEVELOPER) && mtrace('Reengagement modules: User:'.$user->id.' Sending email.');
+    mtrace("Reengagement modules: User: $user->id. Sending email.");
 
-    $templateddetails = reengagement_template_variables($reengagement, $inprogress, $user);
+    $templateddetails = reengagement_template_variables($reengagement, $user);
     $plaintext = html_to_text($templateddetails['emailcontent']);
 
     $emailresult = true;
@@ -448,7 +376,7 @@ function reengagement_email_user($reengagement, $inprogress) {
         $managerids = \totara_job\job_assignment::get_all_manager_userids($user->id);
         if (empty($managerids)) {
             // User has no manager(s).
-            debugging('', DEBUG_ALL) && mtrace("user $user->id has no managers - not sending any manager emails.");
+            mtrace("user $user->id has no managers - not sending any manager emails.");
         } else {
             // User has manager(s).
             foreach ($managerids as $managerid) {
@@ -486,7 +414,7 @@ function reengagement_email_user($reengagement, $inprogress) {
         $emails = array_map('trim', explode(',', $reengagement->thirdpartyemails));
         foreach ($emails as $emailaddress) {
             if (!validate_email($emailaddress)) {
-                debugging('', DEBUG_ALL) && mtrace("invalid third-party email: $email - skipping send");
+                mtrace("invalid third-party email: $emailaddress - skipping send");
                 continue;
             }
             if ($istotara) {
@@ -499,7 +427,7 @@ function reengagement_email_user($reengagement, $inprogress) {
                 $thirdpartyuser->emailstop = 0;
             }
 
-            debugging('', DEBUG_ALL) && mtrace("sending third-party email to: $emailaddress");
+            mtrace("sending third-party email to: $emailaddress");
 
             $usersendresult = reengagement_send_notification($thirdpartyuser,
                     $templateddetails['emailsubjectthirdparty'],
@@ -530,7 +458,7 @@ function reengagement_email_user($reengagement, $inprogress) {
  */
 function reengagement_send_notification($userto, $subject, $messageplain, $messagehtml, $reengagement) {
     $eventdata = new \core\message\message();
-    $eventdata->courseid = $reengagement->courseid;
+    $eventdata->courseid = $reengagement->course;
     $eventdata->modulename = 'reengagement';
     $eventdata->userfrom = core_user::get_support_user();
     $eventdata->userto = $userto;
@@ -552,19 +480,20 @@ function reengagement_send_notification($userto, $subject, $messageplain, $messa
  * Template variables into place in supplied email content.
  *
  * @param object $reengagement db record of details for this activity
- * @param object $inprogress record of user participation in this activity - semiplanned future enhancement.
  * @param object $user record of user being reengaged.
  * @return array - the content of the fields after templating.
  */
-function reengagement_template_variables($reengagement, $inprogress, $user) {
+function reengagement_template_variables($reengagement, $user) {
     global $CFG, $DB;
 
     require_once($CFG->dirroot.'/user/profile/lib.php');
 
+    $course = $DB->get_record('course', ['id' => $reengagement->course]);
+
     $templatevars = array(
-        '/%courseshortname%/' => $reengagement->courseshortname,
-        '/%coursefullname%/' => $reengagement->coursefullname,
-        '/%courseid%/' => $reengagement->courseid,
+        '/%courseshortname%/' => $course->shortname,
+        '/%coursefullname%/' => $course->fullname,
+        '/%courseid%/' => $course->id,
         '/%userfirstname%/' => $user->firstname,
         '/%userlastname%/' => $user->lastname,
         '/%userid%/' => $user->id,
@@ -578,7 +507,7 @@ function reengagement_template_variables($reengagement, $inprogress, $user) {
                                    JOIN {groups} g
                                     ON g.id = gm.groupid
                                   WHERE gm.userid = ? AND g.courseid = ?
-                                   ORDER BY name ASC", array($user->id, $reengagement->courseid));
+                                   ORDER BY name ASC", array($user->id, $reengagement->course));
 
     if (!empty($groups)) {
         $templatevars['/%usergroups%/'] = implode(', ', $groups);
@@ -625,7 +554,7 @@ function reengagement_template_variables($reengagement, $inprogress, $user) {
 
     // Apply enabled filters to email content.
     $options = array(
-            'context' => context_course::instance($reengagement->courseid),
+            'context' => context_course::instance($reengagement->course),
             'noclean' => true,
             'trusted' => true
     );
@@ -700,6 +629,7 @@ function reengagement_install() {
  */
 function reengagement_reset_course_form_definition(&$mform) {
     $mform->addElement('header', 'reengagementheader', get_string('modulenameplural', 'reengagement'));
+    $mform->addElement('advcheckbox', 'reset_reengagement', get_string('removeinprogress', 'reengagement'));
 }
 
 /**
@@ -723,15 +653,29 @@ function reengagement_reset_userdata($data) {
     global $DB;
 
     $componentstr = get_string('modulenameplural', 'reengagement');
-    $status = array();
+    $status = [];
 
     if (!empty($data->reset_reengagement)) {
+        // Delete all reengagement_inprogress records for this course.
         $reengagementsql = "SELECT ch.id
                        FROM {reengagement} ch
                        WHERE ch.course=?";
 
-        $DB->delete_records_select('reengagement_inprogress', "reengagement IN ($reengagementsql)", array($data->courseid));
-        $status[] = array('component' => $componentstr, 'item' => get_string('removeresponses', 'reengagement'), 'error' => false);
+        $DB->delete_records_select('reengagement_inprogress', "reengagement IN ($reengagementsql)", [$data->courseid]);
+        $status[] = ['component' => $componentstr, 'item' => get_string('removeinprogressresults', 'reengagement'),
+            'error' => false];
+
+        // Delete all ad-hoc tasks related to reengagement in this course.
+        $taskclasses = ['\mod_reengagement\task\mark_complete', '\mod_reengagement\task\send_email'];
+        foreach ($taskclasses as $taskclass) {
+            $tasks = manager::get_adhoc_tasks($taskclass);
+            foreach ($tasks as $task) {
+                $taskdata = $task->get_custom_data();
+                if ($taskdata->reengagement->courseid == $data->courseid) {
+                    $DB->delete_records('task_adhoc', ['id' => $task->get_id()]);
+                }
+            }
+        }
     }
 
     return $status;
@@ -747,7 +691,7 @@ function reengagement_get_startusers($reengagement) {
     global $DB;
     $context = context_module::instance($reengagement->cmid);
 
-    list($esql, $params) = get_enrolled_sql($context, 'mod/reengagement:startreengagement', 0, true);
+    [$esql, $params] = get_enrolled_sql($context, 'mod/reengagement:startreengagement', 0, true);
 
     // Get a list of people who already started this reengagement (finished users are included in this list)
     // (based on activity completion records).
@@ -985,7 +929,7 @@ function reengagement_checkstart($course, $cm, $reengagement) {
  * Add a get_coursemodule_info function for 'extra' information
  *
  * @param stdClass $coursemodule The coursemodule object (record).
- * @return cached_cm_info An object on information that the courses will know about.
+ * @return cached_cm_info An object on information that the courses will know about (most noticeably, an icon).
  */
 function reengagement_get_coursemodule_info($coursemodule) {
     global $DB;

@@ -451,7 +451,8 @@ class reengagement_participants extends \table_sql implements dynamic_table {
      */
     public function query_db($pagesize, $useinitialsbar = true) {
         list($twhere, $tparams) = $this->get_sql_where();
-        $psearch = new \mod_reengagement\table\reengagement_search($this->course, $this->context, $this->filterset);
+        $psearch = new \mod_reengagement\table\reengagement_search($this->course, $this->context, $this->filterset,
+            $this->reengagement->id);
 
         $total = $psearch->get_total_participants_count($twhere, $tparams);
 
