@@ -37,6 +37,12 @@ require_once($CFG->dirroot . '/mod/reengagement/lib.php');
 require_once($CFG->libdir . '/completionlib.php');
 require_once($CFG->libdir . '/enrollib.php');
 
+/**
+ * Ad-hoc task to process in progress reengagement completion.
+ *
+ * @copyright  (c) 2024, Enovation Solutions
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
 class mark_complete extends adhoc_task {
 
     /**

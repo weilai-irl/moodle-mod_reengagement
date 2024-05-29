@@ -35,6 +35,12 @@ require_once($CFG->dirroot . '/mod/reengagement/lib.php');
 require_once($CFG->libdir . '/completionlib.php');
 require_once($CFG->libdir . '/enrollib.php');
 
+/**
+ * Ad-hoc task to process email sending.
+ *
+ * @copyright  (c) 2024, Enovation Solutions
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
 class send_email extends adhoc_task {
 
     /**
