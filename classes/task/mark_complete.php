@@ -26,9 +26,8 @@
 namespace mod_reengagement\task;
 
 use cache;
-use context_module;
 use core\event\course_module_completion_updated;
-use core\task\adhoc_task;
+use moodle_exception;
 use stdClass;
 
 defined('MOODLE_INTERNAL') || die();
@@ -43,7 +42,7 @@ require_once($CFG->libdir . '/enrollib.php');
  * @copyright  (c) 2024, Enovation Solutions
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-class mark_complete extends adhoc_task {
+class mark_complete extends reengagement_adhoc_task {
 
     /**
      * Get a descriptive name for this task (shown to admins).
@@ -70,34 +69,10 @@ class mark_complete extends adhoc_task {
         $userid = $inprogressdata->userid;
 
         // Check if user is still enrolled in the course.
-        $context = context_module::instance($cmid);
-        if (!is_enrolled($context, $userid, 'mod/reengagement:startreengagement', true)) {
-            mtrace("Reengagement: invalid inprogressid $inprogressdata->id. Delete the in progress record and the task.");
-            $DB->delete_records('reengagement_inprogress', ['id' => $inprogressdata->id]);
-
-            return;
-        }
-
-        // Ensure the in progress record still exists.
-        if (!$inprogress = $DB->get_record('reengagement_inprogress', ['id' => $inprogressdata->id])) {
-            mtrace("Reengagement: invalid inprogressid $inprogressdata->id. Delete the task.");
-
-            return;
-        }
-
-        // Ensure the reengagement activity is still exists.
-        if (!$reengagement = $DB->get_record('reengagement', ['id' => $reengagementdata->rid])) {
-            mtrace("Reengagement: invalid reengagementid $reengagementdata->rid. Delete the in progress record and the task.");
-            $DB->delete_records('reengagement_inprogress', ['id' => $inprogress->id]);
-
-            return;
-        }
-
-        // Ensure the user still exists.
-        if (!$DB->record_exists('user', ['id' => $userid, 'deleted' => 0])) {
-            mtrace("Reengagement: invalid userid $userid. Delete the in progress record and the task.");
-            $DB->delete_records('reengagement_inprogress', ['id' => $inprogress->id]);
-
+        try {
+            [$reengagement, $inprogress, $context] = self::validate_task($reengagementdata, $inprogressdata);
+        } catch (moodle_exception $e) {
+            // Validation failed, end task.
             return;
         }
 

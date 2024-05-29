@@ -47,6 +47,7 @@ The Reengagement activity is very flexible, explore what you can do with it.
 // Alphabetized.
 $string['activitycompleted'] = 'This activity has been marked as complete';
 $string['adhoctaskmarkcompletetask'] = 'Mark reengagement complete';
+$string['adhoctaskreengagementtask'] = 'Parent reengagement task';
 $string['adhoctasksendemailtask'] = 'Send reengagement email';
 $string['afterdelay'] = 'After delay';
 $string['areyousure'] = 'Are you sure you want to make this change?';
@@ -96,6 +97,7 @@ $string['emailuser_help'] = 'When the activity should notify users: <ul>
 <li>On reengagement completion: Notify the user when the reengagement activity is completed.</li>
 <li>After Delay: Notify the user a set time after they have started the module.</li>
 </ul>';
+$string['errorinvalidtask'] = 'Invalid ad-hoc task';
 $string['errornoid'] = 'You must specify a course_module ID or an instance ID';
 $string['errorreengagementnotvalid'] = 'This reengagement module is not enabled for your account.
 Please contact your administrator if you feel this is in error';
