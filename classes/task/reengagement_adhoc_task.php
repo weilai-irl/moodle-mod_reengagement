@@ -75,10 +75,18 @@ abstract class reengagement_adhoc_task extends adhoc_task {
             throw new moodle_exception('errorinvalidtask', 'mod_reengagement');
         }
 
-        // Check if the user is still enrolled in the course.
+        // Check if the course module is still valid.
         $context = context_module::instance($reengagementdata->cmid);
+        if (!$context) {
+            mtrace("Reengagement: invalid cmid $reengagementdata->cmid. Delete the in progress record and the task.");
+            $DB->delete_records('reengagement_inprogress', ['id' => $inprogressdata->id]);
+
+            throw new moodle_exception('errorinvalidtask', 'mod_reengagement');
+        }
+
+        // Check if the user is still enrolled in the course.
         if (!is_enrolled($context, $userid, 'mod/reengagement:startreengagement', true)) {
-            mtrace("Reengagement: user $userid is not enrolled in the course any more. " .
+            mtrace("Reengagement: user $userid is not enrolled in the course, or cannot start reengagement any more. " .
                 "Delete the in progress record and the task.");
             $DB->delete_records('reengagement_inprogress', ['id' => $inprogressdata->id]);
 
