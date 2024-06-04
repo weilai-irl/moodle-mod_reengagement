@@ -288,8 +288,8 @@ function reengagement_check_course_visibility(int $courseid, bool $ignorecategor
 /**
  * Queue a task to mark a reengagement as complete.
  *
- * @param $reengagement
- * @param $inprogress
+ * @param object $reengagement
+ * @param object $inprogress
  * @return void
  */
 function reengagement_queue_mark_completion_task($reengagement, $inprogress) {
@@ -306,9 +306,9 @@ function reengagement_queue_mark_completion_task($reengagement, $inprogress) {
 /**
  * Queue an email sending task.
  *
- * @param $reengagement
- * @param $inprogress
- * @param $time
+ * @param object $reengagement
+ * @param object $inprogress
+ * @param int $time
  * @return void
  */
 function reengagement_queue_email_task($reengagement, $inprogress, $time) {
