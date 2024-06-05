@@ -29,8 +29,6 @@ use context_module;
 use core\task\adhoc_task;
 use moodle_exception;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Parent ad-hoc task class for reengagement that contains common methods.
  *
