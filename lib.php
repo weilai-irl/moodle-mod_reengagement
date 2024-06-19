@@ -778,14 +778,11 @@ function reengagement_get_startusers($reengagement) {
     $information = '';
 
     $startusers = $DB->get_records_sql($sql, $params);
-    foreach ($startusers as $startcandidate) {
-        // Exclude users who can't see this activity.
-        if (!$ainfomod->is_available($information, false, $startcandidate->id, $modinfo)) {
-            unset($startusers[$startcandidate->id]);
-        }
-    }
+    $startcandidates = array_filter($startusers, function ($startcandidate) use ($ainfomod, $information, $modinfo) {
+        return $ainfomod->is_available($information, false, $startcandidate->id, $modinfo);
+    });
 
-    return $startusers;
+    return $startcandidates;
 }
 
 
